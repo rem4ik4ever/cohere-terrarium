@@ -222,7 +222,7 @@ export class PyodidePythonEnvironment implements PythonEnvironment {
     }
 
 
-    async runCode(code: string, files: any[]): Promise<CodeExecutionResponse> {
+    async runCode(code: string, files: any[], packages?: string[]): Promise<CodeExecutionResponse> {
         const startCode = Date.now();
         let pyodide = this.pyodide!;
         let result: CodeExecutionResponse = { success: true };
@@ -235,6 +235,24 @@ export class PyodidePythonEnvironment implements PythonEnvironment {
             if (code.includes("import requests") || code.includes("requests.")) {
                 await pyodide.loadPackage(["micropip"]);
                 await pyodide.runPythonAsync("import micropip; await micropip.install('requests')");
+            }
+
+            // Install any explicitly requested packages via micropip (best-effort)
+            if (packages != null && packages.length > 0) {
+                await pyodide.loadPackage(["micropip"]);
+                const pkgList = JSON.stringify(packages);
+                // use Python async to install sequentially and surface errors
+                const installCode = `
+import micropip
+async def _terrarium_install():
+    for _p in ${pkgList}:
+        try:
+            await micropip.install(_p)
+        except Exception as _e:
+            print(f"[micropip] failed to install {_p}: {_e}")
+await _terrarium_install()
+                `.trim();
+                await pyodide.runPythonAsync(installCode);
             }
             // load available and needed packages - only supports pyodide built-in packages
             await pyodide.loadPackagesFromImports(code)

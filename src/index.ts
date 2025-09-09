@@ -23,7 +23,7 @@ async function runRequest(req: any, res: any): Promise<void> {
     await pythonEnvironment.waitForReady();
 
     //
-    // parse the request body (code & files)
+    // parse the request body (code, files, packages)
     //
     const code = req.body.code
     if (code == undefined || code.trim() == "") {
@@ -36,8 +36,13 @@ async function runRequest(req: any, res: any): Promise<void> {
         console.log("Got " + files.length + " input files")
         console.log(files.map(f => f.filename + " " + f.b64_data.slice(0, 10) + "... " + f.b64_data.length))
     }
+    let packages: string[] | undefined = undefined
+    if (Array.isArray(req.body.packages)) {
+        packages = req.body.packages.filter((p: any) => typeof p === 'string')
+        console.log("Requested packages:", packages)
+    }
 
-    const result = await pythonEnvironment.runCode(code, files);
+    const result = await pythonEnvironment.runCode(code, files, packages);
 
     // write out the answer, but do not close the response yet - otherwise gcp cloud functions terminate the cpu cycles and hibernate the recycling
     res.write(JSON.stringify(result) + "\n");
