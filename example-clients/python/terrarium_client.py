@@ -7,18 +7,25 @@ import json
 import time
 import google.auth
 import google.auth.transport.requests
+import re
 
 #
 # credentials needed if connecting to a gcp cloud run / function deployment
+# when running locally, we fall back to no auth header
 #
-creds, project = google.auth.default()
-
-def get_bearer():
-    auth_req = google.auth.transport.requests.Request()
-    if creds.expired == True or creds.valid == False:
-        print("refreshing creds")
-        creds.refresh(auth_req)    
-    return creds.id_token.strip()
+try:
+    creds, project = google.auth.default()
+    def get_bearer():
+        auth_req = google.auth.transport.requests.Request()
+        if creds.expired == True or creds.valid == False:
+            print("refreshing creds")
+            creds.refresh(auth_req)
+        return creds.id_token.strip()
+except Exception:
+    creds = None
+    project = None
+    def get_bearer():
+        return ""
 
 
 class B64_FileData(TypedDict):
@@ -26,7 +33,7 @@ class B64_FileData(TypedDict):
     filename: str
 
 
-def run_terrarium(server_url:str, code:str, file_data:List[B64_FileData] = None):
+def run_terrarium(server_url:str, code:str, file_data:List[B64_FileData] = None, packages:List[str] = None):
     """
     Executes the given code in the terrarium environment and returns the result.
 
@@ -50,12 +57,16 @@ def run_terrarium(server_url:str, code:str, file_data:List[B64_FileData] = None)
 
     """
     
-    headers = {"Content-Type": "application/json",
-               "Authorization":"bearer " + get_bearer()}
+    headers = {"Content-Type": "application/json"}
+    token = get_bearer()
+    if token:
+        headers["Authorization"] = "bearer " + token
     
     data = {"code": code}
     if file_data is not None:
         data["files"] = file_data
+    if packages is not None and len(packages) > 0:
+        data["packages"] = packages
 
     result = requests.post(server_url, headers=headers, json=data, stream=True)
     
@@ -123,6 +134,16 @@ if __name__ == "__main__":
     current_directory = os.path.dirname(os.path.realpath(__file__))
     test_files = glob.glob(os.path.join(current_directory, "../../tests/**/*.py"),recursive=True)
     print("Testing files:",test_files)
+    def extract_packages_from_code(code_str: str):
+        try:
+            # Match a line like: # TERRARIUM_PACKAGES=["toolz", "tabulate"]
+            m = re.search(r"^\s*#\s*TERRARIUM_PACKAGES\s*=\s*(\[.*\])\s*$", code_str, re.MULTILINE)
+            if not m:
+                return None
+            return json.loads(m.group(1))
+        except Exception:
+            return None
+
     for file in test_files:
         file_data = None
         if "file_io" in file:
@@ -136,6 +157,7 @@ if __name__ == "__main__":
         print("---------")
         with open(file) as f:
             code = "".join(f.readlines())
+        packages = extract_packages_from_code(code)
         print(code)
         print("---------")
         start = time.time()
@@ -143,7 +165,7 @@ if __name__ == "__main__":
         #
         # run the code in the terrarium environment
         #
-        result = run_terrarium(server_url, code, file_data)
+        result = run_terrarium(server_url, code, file_data, packages)
         
         if "output_files" in result:
             os.makedirs("tests/file_io/_outputs",exist_ok=True)

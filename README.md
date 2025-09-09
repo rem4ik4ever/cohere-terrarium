@@ -87,6 +87,28 @@ run a set of test files (all .py files in ``/test``) through the endpoint with:
 python terrarium_client.py http://localhost:8080
 ```
 
+### Installing non-default Python packages
+
+You can request additional packages to be installed via `micropip` inside the Pyodide sandbox by passing a `packages` array in the request body. These installs are best-effort and may fail for packages that are not compatible with Pyodide/WASM.
+
+Example request:
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+--url http://localhost:8080 \
+--data-raw '{
+  "code": "import somepkg; print(\"ok\")",
+  "packages": ["somepkg"]
+}' \
+--no-buffer
+```
+
+Example Python client usage:
+
+```python
+result = run_terrarium(server_url, code, file_data=None, packages=["requests", "pyyaml"]) 
+```
+
 ## Deployment
 
 ### Deploy as Docker container
