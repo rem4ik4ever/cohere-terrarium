@@ -3,6 +3,8 @@ import { waitFor } from "../../utils/async-utils";
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { CodeExecutionResponse, FileData, PythonEnvironment } from "./types";
+// @ts-ignore - no types available for xhr2 in this environment
+import { XMLHttpRequest as NodeXMLHttpRequest } from 'xhr2';
 
 
 const pythonEnvironmentHomeDir = "/home/earth";
@@ -43,6 +45,18 @@ export class PyodidePythonEnvironment implements PythonEnvironment {
             stderr: msg => { this.err_string += msg + "\n" },
             jsglobals: {
                 clearInterval, clearTimeout, setInterval, setTimeout,
+                // expose fetch APIs to enable HTTP networking from Python via pyodide-http
+                fetch: (globalThis as any).fetch,
+                Headers: (globalThis as any).Headers,
+                Request: (globalThis as any).Request,
+                Response: (globalThis as any).Response,
+                // required by pyodide.http and micropip (they import from js)
+                Object: (globalThis as any).Object,
+                console: (globalThis as any).console,
+                XMLHttpRequest: (NodeXMLHttpRequest as any),
+                // expected browser-like globals
+                crossOriginIsolated: false as any,
+                self: (globalThis as any),
                 // the following need some explanation:
                 // we need to provide a fake ImageData & document object to pyodide, because matplotlib-pyodide polyfills try to access them when initializing
                 // BUT luckily for us matplotlib-pyodide does not actually use them for .savefig rendering (only for .show()), so we can just provide empty objects
@@ -88,13 +102,15 @@ export class PyodidePythonEnvironment implements PythonEnvironment {
             pyodide.FS.writeFile(pyodide?.PATH.join2(pythonEnvironmentHomeDir, f.filename), f.byte_data);
         })
         // load the packages we commonly use to avoid the latency hit during the user req
-        await pyodide.loadPackage(["numpy", "matplotlib", "pandas"])
+        // also include pyodide-http to enable Python HTTP via JS fetch
+        await pyodide.loadPackage(["numpy", "matplotlib", "pandas", "pyodide-http"])
 
         // set interrupt buffer to allow for termination
         pyodide.setInterruptBuffer(this.interrupt);
 
         // second part of the import (also takes a latency hit), its ok to re-import packages
-        await pyodide.runPythonAsync("import matplotlib.pyplot as plt\nimport pandas as pd\nimport numpy as np")
+        // enable HTTP in Python by patching urllib/requests via pyodide-http, but don't fail if unavailable
+        await pyodide.runPythonAsync("\ntry:\n    import pyodide_http; pyodide_http.patch_all()\nexcept Exception:\n    pass\nimport matplotlib.pyplot as plt\nimport pandas as pd\nimport numpy as np")
         console.log("Pyodide is loaded with packages imported")
         return Promise.resolve();
     }
@@ -211,6 +227,15 @@ export class PyodidePythonEnvironment implements PythonEnvironment {
         let pyodide = this.pyodide!;
         let result: CodeExecutionResponse = { success: true };
         try {
+            // ensure HTTP networking is patched on every run before any imports occur in user code
+            await pyodide.loadPackage(["pyodide-http"]);
+            await pyodide.runPythonAsync("import pyodide_http; pyodide_http.patch_all(); pyodide_http.patch_urllib()");
+
+            // If user code uses requests, install it dynamically via micropip
+            if (code.includes("import requests") || code.includes("requests.")) {
+                await pyodide.loadPackage(["micropip"]);
+                await pyodide.runPythonAsync("import micropip; await micropip.install('requests')");
+            }
             // load available and needed packages - only supports pyodide built-in packages
             await pyodide.loadPackagesFromImports(code)
 
